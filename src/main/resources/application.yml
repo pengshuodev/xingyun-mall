@@ -1,0 +1,29 @@
+server:
+  port: 8089
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/xingyun_mall?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 123456
+
+  redis:
+    host: localhost
+    port: 6379
+    database: 0
+    timeout: 5000ms
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    com.xingyun.orderpayment: debug
+
+jwt:
+  secret: xingyun2026secretkey
+  expiration: 86400000  # 24小时，单位毫秒
