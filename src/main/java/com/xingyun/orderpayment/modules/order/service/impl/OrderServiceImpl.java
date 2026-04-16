@@ -1,8 +1,11 @@
 package com.xingyun.orderpayment.modules.order.service.impl;
 
 import cn.hutool.core.util.IdUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xingyun.orderpayment.common.exception.BusinessException;
 import com.xingyun.orderpayment.modules.order.dto.req.CreateOrderReq;
+import com.xingyun.orderpayment.modules.order.dto.req.OrderListReq;
 import com.xingyun.orderpayment.modules.order.dto.resp.OrderResp;
 import com.xingyun.orderpayment.modules.order.entity.Order;
 import com.xingyun.orderpayment.modules.order.entity.OrderItem;
@@ -17,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -87,6 +91,8 @@ public class OrderServiceImpl implements OrderService {
         order.setTotalAmount(totalAmount);
         order.setStatus(0);// 0-待支付
         order.setRemark(req.getRemark());
+        order.setCreateTime(LocalDateTime.now());
+        order.setUpdateTime(LocalDateTime.now());
         orderMapper.insert(order);
 
         // 8. 创建订单明细
@@ -99,6 +105,7 @@ public class OrderServiceImpl implements OrderService {
             orderItem.setProductName(product.getName());
             orderItem.setPrice(product.getPrice());
             orderItem.setQuantity(item.getQuantity());
+            orderItem.setCreateTime(LocalDateTime.now());
             orderItems.add(orderItem);
         }
         orderItemMapper.insertBatch(orderItems);  // 需要批量插入
@@ -128,5 +135,103 @@ public class OrderServiceImpl implements OrderService {
         resp.setItems(itemResps);
 
         return resp;
+    }
+
+    @Override
+    public Page<OrderResp> listOrders(Long userId, OrderListReq req) {
+        // 1. 构建查询条件
+        LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Order::getUserId, userId);
+        wrapper.eq(Order::getIsDeleted, 0);
+        if (req.getStatus() != null) {
+            wrapper.eq(Order::getStatus, req.getStatus());
+        }
+        wrapper.orderByDesc(Order::getCreateTime);
+
+        // 2. 分页查询订单主表
+        Page<Order> page = new Page<>(req.getPageNum(), req.getPageSize());
+        Page<Order> orderPage = orderMapper.selectPage(page, wrapper);
+
+        // 3. 查询每个订单的明细
+        ArrayList<OrderResp> orderRespList = new ArrayList<>();
+        for (Order record : orderPage.getRecords()) {
+            OrderResp orderResp = convertToOrderResp(record);
+            orderRespList.add(orderResp);
+        }
+
+        // 4. 构建分页响应
+        Page<OrderResp> respPage = new Page<>(orderPage.getCurrent(), orderPage.getSize());
+        respPage.setTotal(orderPage.getTotal());
+        respPage.setRecords(orderRespList);
+
+        return respPage;
+    }
+
+    @Override
+    public OrderResp getOrderDetail(Long userId, String orderNo) {
+        // 1. 查询订单
+        LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Order::getOrderNo, orderNo);
+        wrapper.eq(Order::getUserId, userId);
+        wrapper.eq(Order::getIsDeleted, 0);
+        Order order = orderMapper.selectOne(wrapper);
+
+        if (order == null) {
+            throw new BusinessException("订单不存在");
+        }
+
+        // 2. 转换并返回
+        return convertToOrderResp(order);
+    }
+
+    /**
+     * 订单实体转响应 DTO
+     */
+    private OrderResp convertToOrderResp(Order order) {
+        OrderResp resp = new OrderResp();
+        resp.setOrderNo(order.getOrderNo());
+        resp.setUserId(order.getUserId());
+        resp.setTotalAmount(order.getTotalAmount());
+        resp.setStatus(order.getStatus());
+        resp.setStatusDesc(getStatusDesc(order.getStatus()));
+        resp.setCreateTime(order.getCreateTime());
+
+
+        // 查询订单明细
+        LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
+        itemWrapper.eq(OrderItem::getOrderNo, order.getOrderNo());
+        List<OrderItem> orderItems = orderItemMapper.selectList(itemWrapper);
+
+        List<OrderResp.OrderItemResp> itemResps = new ArrayList<>();
+        for (OrderItem item : orderItems) {
+            OrderResp.OrderItemResp itemResp = new OrderResp.OrderItemResp();
+            itemResp.setProductId(item.getProductId());
+            itemResp.setProductName(item.getProductName());
+            itemResp.setPrice(item.getPrice());
+            itemResp.setQuantity(item.getQuantity());
+            itemResp.setTotalPrice(item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
+            itemResps.add(itemResp);
+        }
+        resp.setItems(itemResps);
+
+        return resp;
+    }
+
+    /**
+     * 获取状态描述
+     */
+    private String getStatusDesc(Integer status) {
+        switch (status) {
+            case 0:
+                return "待支付";
+            case 1:
+                return "已支付";
+            case 2:
+                return "已取消";
+            case 3:
+                return "已关闭";
+            default:
+                return "未知";
+        }
     }
 }
