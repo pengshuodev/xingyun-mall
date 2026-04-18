@@ -19,6 +19,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/api/user/login",
                         "/api/user/register",
+                        "/api/payment/mock-pay",        // 放行模拟支付页面
+                        "/api/payment/mock-pay/**",      // 放行模拟支付页面相关资源
+                        "/api/payment/status",
+                        "/api/payment/callback",
                         "/swagger-ui/**",
                         "/v3/api-docs/**",
                         "/doc.html"
