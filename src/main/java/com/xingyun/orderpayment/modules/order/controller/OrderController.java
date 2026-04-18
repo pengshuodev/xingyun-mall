@@ -51,4 +51,13 @@ public class OrderController {
         OrderResp resp = orderService.getOrderDetail(userId, orderNo);
         return Result.success(resp);
     }
+
+    @PutMapping("/cancel/{orderNo}")
+    @Operation(summary = "取消订单")
+    public Result<Void> cancelOrder(@PathVariable String orderNo) {
+        Long userId = UserContext.getUserId();
+        log.info("取消订单：userId={}, orderNo={}", userId, orderNo);
+        orderService.cancelOrder(userId, orderNo);
+        return Result.success();
+    }
 }

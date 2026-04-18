@@ -24,6 +24,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -183,6 +184,79 @@ public class OrderServiceImpl implements OrderService {
 
         // 2. 转换并返回
         return convertToOrderResp(order);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void cancelOrder(Long userId, String orderNo) {
+        // 1. 查询并校验订单
+        LambdaQueryWrapper<Order> orderWrapper = new LambdaQueryWrapper<>();
+        orderWrapper.eq(Order::getOrderNo, orderNo)
+                .eq(Order::getUserId, userId);
+        Order order = orderMapper.selectOne(orderWrapper);
+
+        if (order == null) {
+            throw new BusinessException("订单不存在");
+        }
+        if (order.getStatus() != 0) {
+            throw new BusinessException("订单状态不允许取消，当前状态：" + getStatusDesc(order.getStatus()));
+        }
+
+        // 2. 查询订单明细
+        LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
+        itemWrapper.eq(OrderItem::getOrderNo, orderNo);
+        List<OrderItem> orderItems = orderItemMapper.selectList(itemWrapper);
+
+        if (orderItems == null || orderItems.isEmpty()) {
+            throw new BusinessException("订单明细不存在");
+        }
+
+        // 3. 批量查询商品（性能优化）
+        List<Long> productIds = orderItems.stream()
+                .map(OrderItem::getProductId)
+                .distinct()
+                .collect(Collectors.toList());
+
+        // 关键：构建 Map 保证对应关系准确
+        Map<Long, Product> productMap = productMapper.selectBatchIds(productIds)
+                .stream()
+                .collect(Collectors.toMap(Product::getId, Function.identity()));
+
+        // 4. 恢复库存（处理乐观锁）
+        for (OrderItem item : orderItems) {
+            Product product = productMap.get(item.getProductId());
+
+            // 严格校验商品存在性
+            if (product == null) {
+                log.error("订单取消异常：商品不存在，productId={}, orderNo={}", item.getProductId(), orderNo);
+                throw new BusinessException("商品数据异常，productId=" + item.getProductId());
+            }
+
+            // 计算新库存并更新
+            product.setStock(product.getStock() + item.getQuantity());
+            product.setUpdateTime(LocalDateTime.now());
+
+            int updated = productMapper.updateById(product);
+
+            // 乐观锁冲突处理
+            if (updated == 0) {
+                // 重新查询当前库存
+                Product currentProduct = productMapper.selectById(product.getId());
+                log.warn("库存更新冲突，productId={}, 期望stock={}, 实际stock={}",
+                        product.getId(), product.getStock() - item.getQuantity(), currentProduct.getStock());
+                throw new BusinessException("操作频繁，请稍后重试");
+            }
+
+            log.info("恢复库存成功：productId={}, quantity={}, newStock={}",
+                    item.getProductId(), item.getQuantity(), product.getStock());
+        }
+
+        // 5. 更新订单状态
+        order.setStatus(2);
+        order.setUpdateTime(LocalDateTime.now());
+        orderMapper.updateById(order);
+
+        log.info("订单取消成功：orderNo={}, userId={}", orderNo, userId);
     }
 
     /**

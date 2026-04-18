@@ -21,4 +21,9 @@ public interface OrderService {
      * 查询订单详情
      */
     OrderResp getOrderDetail(Long userId, String orderNo);
+
+    /**
+     * 取消订单
+     */
+    void cancelOrder(Long userId, String orderNo);
 }
