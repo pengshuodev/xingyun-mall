@@ -68,6 +68,7 @@ public class OrderServiceImpl implements OrderService {
         for (CreateOrderReq.OrderItemReq item : req.getItems()) {
             Product product = productMap.get(item.getProductId());
             product.setStock(product.getStock() - item.getQuantity());
+            product.setUpdateTime(LocalDateTime.now());
             int updated = productMapper.updateById(product);
             if (updated == 0) {
                 throw new BusinessException("下单失败，请重试");
