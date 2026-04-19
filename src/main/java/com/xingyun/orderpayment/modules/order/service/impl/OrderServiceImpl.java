@@ -4,6 +4,7 @@ import cn.hutool.core.util.IdUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xingyun.orderpayment.common.exception.BusinessException;
+import com.xingyun.orderpayment.modules.cart.service.CartService;
 import com.xingyun.orderpayment.modules.order.dto.req.CreateOrderReq;
 import com.xingyun.orderpayment.modules.order.dto.req.OrderListReq;
 import com.xingyun.orderpayment.modules.order.dto.resp.OrderResp;
@@ -34,6 +35,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
     private final ProductMapper productMapper;
+    private final CartService cartService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -135,6 +137,16 @@ public class OrderServiceImpl implements OrderService {
             itemResps.add(itemResp);
         }
         resp.setItems(itemResps);
+
+        // 10. 清空购物车中已下单的商品
+        try {
+            for (CreateOrderReq.OrderItemReq item : req.getItems()) {
+                cartService.removeCartItem(userId, item.getProductId());
+            }
+            log.info("下单成功，已清空购物车：userId={}, orderNo={}", userId, orderNo);
+        } catch (Exception e) {
+            log.warn("清空购物车失败，不影响订单：userId={}, orderNo={}", userId, orderNo, e);
+        }
 
         return resp;
     }
