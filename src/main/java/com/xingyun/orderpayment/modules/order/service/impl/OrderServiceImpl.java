@@ -259,6 +259,103 @@ public class OrderServiceImpl implements OrderService {
         log.info("订单取消成功：orderNo={}, userId={}", orderNo, userId);
     }
 
+    @Override
+    public void closeTimeoutOrders() {
+        // 1. 查询超时未支付的订单（30分钟）
+        LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Order::getStatus, 0)
+                .lt(Order::getCreateTime, LocalDateTime.now().minusMinutes(30));
+        List<Order> timeoutOrders = orderMapper.selectList(wrapper);
+
+        if (timeoutOrders.isEmpty()) {
+            log.debug("无超时订单");
+            return;
+        }
+
+        log.info("发现 {} 个超时订单，开始自动关单", timeoutOrders.size());
+
+        int successCount = 0;
+        int failCount = 0;
+
+        for (Order order : timeoutOrders) {
+            try {
+                closeSingleOrder(order);
+                successCount++;
+                log.info("超时关单成功：orderNo={}", order.getOrderNo());
+            } catch (Exception e) {
+                failCount++;
+                log.error("超时关单失败：orderNo={}", order.getOrderNo(), e);
+            }
+        }
+
+        log.info("超时关单任务完成：成功={}, 失败={}", successCount, failCount);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void closeSingleOrder(Order order) {
+        // 二次检查：防止并发（订单可能已被其他操作处理）
+        Order latestOrder = orderMapper.selectById(order.getId());
+        if (latestOrder == null) {
+            log.error("订单不存在：orderNo={}", order.getOrderNo());
+            throw new BusinessException("订单不存在");
+        }
+        if (latestOrder.getStatus() != 0) {
+            log.info("订单已被处理，跳过：orderNo={}, currentStatus={}",
+                    order.getOrderNo(), latestOrder.getStatus());
+            return;
+        }
+
+        // 1. 查询订单明细
+        LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
+        itemWrapper.eq(OrderItem::getOrderNo, latestOrder.getOrderNo());
+        List<OrderItem> orderItems = orderItemMapper.selectList(itemWrapper);
+
+        if (orderItems == null || orderItems.isEmpty()) {
+            log.error("订单明细为空：orderNo={}", latestOrder.getOrderNo());
+            throw new BusinessException("订单明细不存在");
+        }
+
+        // 2. 批量查询商品
+        List<Long> productIds = orderItems.stream()
+                .map(OrderItem::getProductId)
+                .distinct()
+                .toList();
+        List<Product> products = productMapper.selectBatchIds(productIds);
+        Map<Long, Product> productMap = products.stream()
+                .collect(Collectors.toMap(Product::getId, p -> p, (e, r) -> e));
+
+        // 3. 恢复库存
+        for (OrderItem item : orderItems) {
+            Product product = productMap.get(item.getProductId());
+            if (product == null) {
+                log.error("商品不存在：productId={}, orderNo={}",
+                        item.getProductId(), latestOrder.getOrderNo());
+                throw new BusinessException("商品不存在：" + item.getProductId());
+            }
+
+            product.setStock(product.getStock() + item.getQuantity());
+            product.setUpdateTime(LocalDateTime.now());
+
+            int updated = productMapper.updateById(product);
+            if (updated == 0) {
+                log.warn("库存恢复冲突，productId={}, version={}",
+                        product.getId(), product.getVersion());
+                throw new BusinessException("库存恢复失败，请重试");
+            }
+
+            log.debug("恢复库存：productId={}, quantity={}, newStock={}",
+                    item.getProductId(), item.getQuantity(), product.getStock());
+        }
+
+        // 4. 更新订单状态（3-超时关闭）
+        latestOrder.setStatus(3);
+        latestOrder.setUpdateTime(LocalDateTime.now());
+        orderMapper.updateById(latestOrder);
+
+        log.info("超时关单完成：orderNo={}", latestOrder.getOrderNo());
+    }
+
     /**
      * 订单实体转响应 DTO
      */

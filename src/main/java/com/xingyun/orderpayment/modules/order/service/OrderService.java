@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xingyun.orderpayment.modules.order.dto.req.CreateOrderReq;
 import com.xingyun.orderpayment.modules.order.dto.req.OrderListReq;
 import com.xingyun.orderpayment.modules.order.dto.resp.OrderResp;
+import com.xingyun.orderpayment.modules.order.entity.Order;
 
 public interface OrderService {
 
@@ -26,4 +27,14 @@ public interface OrderService {
      * 取消订单
      */
     void cancelOrder(Long userId, String orderNo);
+
+    /**
+     * 超时自动关单（定时任务调用）
+     */
+    void closeTimeoutOrders();
+
+    /**
+     * 关闭单个订单（独立事务，用于超时关单）
+     */
+    void closeSingleOrder(Order order);
 }
