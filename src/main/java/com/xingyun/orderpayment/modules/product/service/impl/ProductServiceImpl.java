@@ -2,6 +2,8 @@ package com.xingyun.orderpayment.modules.product.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.xingyun.orderpayment.common.enums.ProductStatusEnum;
+import com.xingyun.orderpayment.common.enums.ResultCodeEnum;
 import com.xingyun.orderpayment.common.exception.BusinessException;
 import com.xingyun.orderpayment.modules.product.dto.req.ProductListReq;
 import com.xingyun.orderpayment.modules.product.dto.resp.ProductResp;
@@ -29,7 +31,7 @@ public class ProductServiceImpl implements ProductService {
             wrapper.like(Product::getName, req.getKeyword());
         }
         // 只查询上架的商品
-        wrapper.eq(Product::getStatus, 1);
+        wrapper.eq(Product::getStatus, ProductStatusEnum.ON_SALE.getCode());
         // 按创建时间倒序排序
         wrapper.orderByDesc(Product::getCreateTime);
 
@@ -49,10 +51,16 @@ public class ProductServiceImpl implements ProductService {
     public ProductResp getProductDetail(Long id) {
         Product product = productMapper.selectById(id);
         if(product == null){
-            throw new BusinessException("商品不存在");
+            throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND);
         }
-        if(product.getStatus() != 1){
-            throw new BusinessException("商品已下架");
+        // 2. 使用枚举判断商品状态
+        ProductStatusEnum status = ProductStatusEnum.fromCodeOrDefault(
+                product.getStatus(),
+                ProductStatusEnum.OFF_SALE
+        );
+        if (status.isOffSale()) {
+            throw new BusinessException(ResultCodeEnum.PRODUCT_OFF_SALE,
+                    String.format("商品[%s]已下架", product.getName()));
         }
         return convertToResp(product);
     }

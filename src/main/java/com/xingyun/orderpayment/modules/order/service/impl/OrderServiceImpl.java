@@ -3,6 +3,9 @@ package com.xingyun.orderpayment.modules.order.service.impl;
 import cn.hutool.core.util.IdUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.xingyun.orderpayment.common.enums.OrderStatusEnum;
+import com.xingyun.orderpayment.common.enums.ProductStatusEnum;
+import com.xingyun.orderpayment.common.enums.ResultCodeEnum;
 import com.xingyun.orderpayment.common.exception.BusinessException;
 import com.xingyun.orderpayment.modules.cart.service.CartService;
 import com.xingyun.orderpayment.modules.order.dto.req.CreateOrderReq;
@@ -42,7 +45,7 @@ public class OrderServiceImpl implements OrderService {
     public OrderResp createOrder(Long userId, CreateOrderReq req) {
         // 1. 参数校验
         if (req.getItems() == null || req.getItems().isEmpty()) {
-            throw new RuntimeException("订单项不能为空");
+            throw new BusinessException(ResultCodeEnum.ORDER_ITEM_EMPTY);
         }
 
         // 2. 获取商品信息
@@ -57,13 +60,20 @@ public class OrderServiceImpl implements OrderService {
         for (CreateOrderReq.OrderItemReq item : req.getItems()) {
             Product product = productMap.get(item.getProductId());
             if (product == null) {
-                throw new BusinessException("商品不存在：" + item.getProductId());
+                throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND, "商品ID：" + item.getProductId());
             }
-            if (product.getStatus() != 1) {
-                throw new BusinessException("商品已下架：" + product.getName());
+            ProductStatusEnum status = ProductStatusEnum.fromCodeOrDefault(
+                    product.getStatus(),
+                    ProductStatusEnum.OFF_SALE
+            );
+            if (status.isOffSale()) {
+                throw new BusinessException(ResultCodeEnum.PRODUCT_OFF_SALE,
+                        String.format("商品[%s]已下架", product.getName()));
             }
             if (product.getStock() < item.getQuantity()) {
-                throw new BusinessException("库存不足：" + product.getName() + "，当前库存：" + product.getStock());
+                throw new BusinessException(ResultCodeEnum.STOCK_INSUFFICIENT,
+                        String.format("商品[%s]库存不足，当前库存：%d，需求数量：%d",
+                                product.getName(), product.getStock(), item.getQuantity()));
             }
         }
 
@@ -74,7 +84,8 @@ public class OrderServiceImpl implements OrderService {
             product.setUpdateTime(LocalDateTime.now());
             int updated = productMapper.updateById(product);
             if (updated == 0) {
-                throw new BusinessException("下单失败，请重试");
+                throw new BusinessException(ResultCodeEnum.STOCK_INSUFFICIENT,
+                        String.format("商品[%s]库存已被其他用户抢购，请重新下单", product.getName()));
             }
         }
 
@@ -93,7 +104,7 @@ public class OrderServiceImpl implements OrderService {
         order.setOrderNo(orderNo);
         order.setUserId(userId);
         order.setTotalAmount(totalAmount);
-        order.setStatus(0);// 0-待支付
+        order.setStatus(OrderStatusEnum.PENDING_PAY.getCode());
         order.setRemark(req.getRemark());
         order.setCreateTime(LocalDateTime.now());
         order.setUpdateTime(LocalDateTime.now());
@@ -121,8 +132,8 @@ public class OrderServiceImpl implements OrderService {
         resp.setOrderNo(orderNo);
         resp.setUserId(userId);
         resp.setTotalAmount(totalAmount);
-        resp.setStatus(0);
-        resp.setStatusDesc("待支付");
+        resp.setStatus(OrderStatusEnum.PENDING_PAY.getCode());
+        resp.setStatusDesc(OrderStatusEnum.PENDING_PAY.getDesc());
         resp.setCreateTime(order.getCreateTime());
 
         List<OrderResp.OrderItemResp> itemResps = new ArrayList<>();
@@ -158,6 +169,8 @@ public class OrderServiceImpl implements OrderService {
         wrapper.eq(Order::getUserId, userId);
         wrapper.eq(Order::getIsDeleted, 0);
         if (req.getStatus() != null) {
+            OrderStatusEnum.fromCode(req.getStatus())
+                    .orElseThrow(() -> new BusinessException(ResultCodeEnum.BAD_REQUEST, "无效的订单状态"));
             wrapper.eq(Order::getStatus, req.getStatus());
         }
         wrapper.orderByDesc(Order::getCreateTime);
@@ -191,7 +204,7 @@ public class OrderServiceImpl implements OrderService {
         Order order = orderMapper.selectOne(wrapper);
 
         if (order == null) {
-            throw new BusinessException("订单不存在");
+            throw new BusinessException(ResultCodeEnum.ORDER_NOT_FOUND);
         }
 
         // 2. 转换并返回
@@ -208,19 +221,24 @@ public class OrderServiceImpl implements OrderService {
         Order order = orderMapper.selectOne(orderWrapper);
 
         if (order == null) {
-            throw new BusinessException("订单不存在");
+            throw new BusinessException(ResultCodeEnum.ORDER_NOT_FOUND);
         }
-        if (order.getStatus() != 0) {
-            throw new BusinessException("订单状态不允许取消，当前状态：" + getStatusDesc(order.getStatus()));
-        }
+        OrderStatusEnum currentStatus = OrderStatusEnum.fromCodeOrDefault(
+                order.getStatus(),
+                OrderStatusEnum.PENDING_PAY
+        );
 
+        if (!currentStatus.canCancel()) {
+            throw new BusinessException(ResultCodeEnum.ORDER_STATUS_ERROR,
+                    String.format("订单状态不允许取消，当前状态：%s", currentStatus.getDesc()));
+        }
         // 2. 查询订单明细
         LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<>();
         itemWrapper.eq(OrderItem::getOrderNo, orderNo);
         List<OrderItem> orderItems = orderItemMapper.selectList(itemWrapper);
 
         if (orderItems == null || orderItems.isEmpty()) {
-            throw new BusinessException("订单明细不存在");
+            throw new BusinessException(ResultCodeEnum.ORDER_ITEM_EMPTY);
         }
 
         // 3. 批量查询商品（性能优化）
@@ -241,7 +259,8 @@ public class OrderServiceImpl implements OrderService {
             // 严格校验商品存在性
             if (product == null) {
                 log.error("订单取消异常：商品不存在，productId={}, orderNo={}", item.getProductId(), orderNo);
-                throw new BusinessException("商品数据异常，productId=" + item.getProductId());
+                throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND,
+                        "商品ID：" + item.getProductId());
             }
 
             // 计算新库存并更新
@@ -256,7 +275,7 @@ public class OrderServiceImpl implements OrderService {
                 Product currentProduct = productMapper.selectById(product.getId());
                 log.warn("库存更新冲突，productId={}, 期望stock={}, 实际stock={}",
                         product.getId(), product.getStock() - item.getQuantity(), currentProduct.getStock());
-                throw new BusinessException("操作频繁，请稍后重试");
+                throw new BusinessException(ResultCodeEnum.INTERNAL_ERROR, "操作频繁，请稍后重试");
             }
 
             log.info("恢复库存成功：productId={}, quantity={}, newStock={}",
@@ -264,7 +283,7 @@ public class OrderServiceImpl implements OrderService {
         }
 
         // 5. 更新订单状态
-        order.setStatus(2);
+        order.setStatus(OrderStatusEnum.CANCELLED.getCode());
         order.setUpdateTime(LocalDateTime.now());
         orderMapper.updateById(order);
 
@@ -275,7 +294,7 @@ public class OrderServiceImpl implements OrderService {
     public void closeTimeoutOrders() {
         // 1. 查询超时未支付的订单（30分钟）
         LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(Order::getStatus, 0)
+        wrapper.eq(Order::getStatus, OrderStatusEnum.PENDING_PAY.getCode())
                 .lt(Order::getCreateTime, LocalDateTime.now().minusMinutes(30));
         List<Order> timeoutOrders = orderMapper.selectList(wrapper);
 
@@ -310,11 +329,18 @@ public class OrderServiceImpl implements OrderService {
         Order latestOrder = orderMapper.selectById(order.getId());
         if (latestOrder == null) {
             log.error("订单不存在：orderNo={}", order.getOrderNo());
-            throw new BusinessException("订单不存在");
+            throw new BusinessException(ResultCodeEnum.ORDER_NOT_FOUND);
         }
-        if (latestOrder.getStatus() != 0) {
+        // 使用枚举判断状态
+        OrderStatusEnum currentStatus = OrderStatusEnum.fromCodeOrDefault(
+                latestOrder.getStatus(),
+                OrderStatusEnum.PENDING_PAY
+        );
+
+        // 只有待支付状态才能超时关闭
+        if (!currentStatus.canCancel()) {
             log.info("订单已被处理，跳过：orderNo={}, currentStatus={}",
-                    order.getOrderNo(), latestOrder.getStatus());
+                    order.getOrderNo(), currentStatus.getDesc());
             return;
         }
 
@@ -325,7 +351,7 @@ public class OrderServiceImpl implements OrderService {
 
         if (orderItems == null || orderItems.isEmpty()) {
             log.error("订单明细为空：orderNo={}", latestOrder.getOrderNo());
-            throw new BusinessException("订单明细不存在");
+            throw new BusinessException(ResultCodeEnum.ORDER_ITEM_EMPTY);
         }
 
         // 2. 批量查询商品
@@ -343,7 +369,7 @@ public class OrderServiceImpl implements OrderService {
             if (product == null) {
                 log.error("商品不存在：productId={}, orderNo={}",
                         item.getProductId(), latestOrder.getOrderNo());
-                throw new BusinessException("商品不存在：" + item.getProductId());
+                throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND);
             }
 
             product.setStock(product.getStock() + item.getQuantity());
@@ -353,7 +379,7 @@ public class OrderServiceImpl implements OrderService {
             if (updated == 0) {
                 log.warn("库存恢复冲突，productId={}, version={}",
                         product.getId(), product.getVersion());
-                throw new BusinessException("库存恢复失败，请重试");
+                throw new BusinessException(ResultCodeEnum.INTERNAL_ERROR, "库存恢复失败，请重试");
             }
 
             log.debug("恢复库存：productId={}, quantity={}, newStock={}",
@@ -361,7 +387,7 @@ public class OrderServiceImpl implements OrderService {
         }
 
         // 4. 更新订单状态（3-超时关闭）
-        latestOrder.setStatus(3);
+        latestOrder.setStatus(OrderStatusEnum.CLOSED.getCode());
         latestOrder.setUpdateTime(LocalDateTime.now());
         orderMapper.updateById(latestOrder);
 
@@ -377,7 +403,7 @@ public class OrderServiceImpl implements OrderService {
         resp.setUserId(order.getUserId());
         resp.setTotalAmount(order.getTotalAmount());
         resp.setStatus(order.getStatus());
-        resp.setStatusDesc(getStatusDesc(order.getStatus()));
+        resp.setStatusDesc(OrderStatusEnum.getDescByCode(order.getStatus()));
         resp.setCreateTime(order.getCreateTime());
 
 
@@ -401,21 +427,4 @@ public class OrderServiceImpl implements OrderService {
         return resp;
     }
 
-    /**
-     * 获取状态描述
-     */
-    private String getStatusDesc(Integer status) {
-        switch (status) {
-            case 0:
-                return "待支付";
-            case 1:
-                return "已支付";
-            case 2:
-                return "已取消";
-            case 3:
-                return "已关闭";
-            default:
-                return "未知";
-        }
-    }
 }

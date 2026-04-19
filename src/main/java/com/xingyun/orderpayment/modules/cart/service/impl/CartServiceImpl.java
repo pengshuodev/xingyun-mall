@@ -1,8 +1,8 @@
 package com.xingyun.orderpayment.modules.cart.service.impl;
 
-import cn.hutool.json.JSON;
 import cn.hutool.json.JSONUtil;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.xingyun.orderpayment.common.enums.ProductStatusEnum;
+import com.xingyun.orderpayment.common.enums.ResultCodeEnum;
 import com.xingyun.orderpayment.common.exception.BusinessException;
 import com.xingyun.orderpayment.modules.cart.dto.req.CartAddReq;
 import com.xingyun.orderpayment.modules.cart.dto.req.CartUpdateReq;
@@ -42,10 +42,16 @@ public class CartServiceImpl implements CartService {
         // 1. 检查商品是否存在且上架
         Product product = productMapper.selectById(req.getProductId());
         if (product == null) {
-            throw new BusinessException("商品不存在");
+            throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND);
         }
-        if (product.getStatus() != 1) {
-            throw new BusinessException("商品已下架");
+        // 使用枚举判断商品状态
+        ProductStatusEnum status = ProductStatusEnum.fromCodeOrDefault(
+                product.getStatus(),
+                ProductStatusEnum.OFF_SALE
+        );
+        if (status.isOffSale()) {
+            throw new BusinessException(ResultCodeEnum.PRODUCT_OFF_SALE,
+                    String.format("商品[%s]已下架", product.getName()));
         }
 
         // 2. 获取现有购物车数量
@@ -62,7 +68,9 @@ public class CartServiceImpl implements CartService {
 
         // 4. 检查库存
         if (product.getStock() < finalQuantity) {
-            throw new BusinessException("库存不足，当前库存：" + product.getStock());
+            throw new BusinessException(ResultCodeEnum.STOCK_INSUFFICIENT,
+                    String.format("商品[%s]库存不足，当前库存：%d，需求数量：%d",
+                            product.getName(), product.getStock(), finalQuantity));
         }
 
         // 5. 构建购物车项
@@ -99,7 +107,7 @@ public class CartServiceImpl implements CartService {
         // 1. 检查购物车中是否有该商品
         String value = (String) redisTemplate.opsForHash().get(key, field);
         if (value == null) {
-            throw new BusinessException("购物车中不存在该商品");
+            throw new BusinessException(ResultCodeEnum.CART_ITEM_NOT_FOUND);
         }
 
         // 2. 如果数量为0，删除该商品
@@ -112,10 +120,12 @@ public class CartServiceImpl implements CartService {
         // 3. 检查库存
         Product product = productMapper.selectById(req.getProductId());
         if (product == null) {
-            throw new BusinessException("商品不存在");
+            throw new BusinessException(ResultCodeEnum.PRODUCT_NOT_FOUND);
         }
         if (product.getStock() < req.getQuantity()) {
-            throw new BusinessException("库存不足");
+            throw new BusinessException(ResultCodeEnum.STOCK_INSUFFICIENT,
+                    String.format("商品[%s]库存不足，当前库存：%d，需求数量：%d",
+                            product.getName(), product.getStock(), req.getQuantity()));
         }
 
 
@@ -136,7 +146,7 @@ public class CartServiceImpl implements CartService {
         Long deletedCount = redisTemplate.opsForHash().delete(key, field);
 
         if (deletedCount == null || deletedCount == 0) {
-            throw new BusinessException("购物车中不存在该商品");
+            throw new BusinessException(ResultCodeEnum.CART_ITEM_NOT_FOUND);
         }
 
         log.info("删除购物车商品：userId={}, productId={}", userId, productId);

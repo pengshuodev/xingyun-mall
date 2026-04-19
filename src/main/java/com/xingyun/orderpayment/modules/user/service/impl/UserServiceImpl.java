@@ -1,6 +1,8 @@
 package com.xingyun.orderpayment.modules.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.xingyun.orderpayment.common.enums.ResultCodeEnum;
+import com.xingyun.orderpayment.common.enums.UserStatusEnum;
 import com.xingyun.orderpayment.common.exception.BusinessException;
 import com.xingyun.orderpayment.common.utils.JwtUtils;
 import com.xingyun.orderpayment.modules.user.dto.req.LoginReq;
@@ -15,7 +17,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Date;
 
 @Slf4j
 @Service
@@ -30,21 +31,21 @@ public class UserServiceImpl implements UserService {
     public void register(RegisterReq req) {
         // 1. 验证用户名是否已存在
         if (checkUsernameExists(req.getUsername())) {
-            throw new BusinessException("用户名已存在");
+            throw new BusinessException(ResultCodeEnum.USERNAME_EXISTS);
         }
         // 2. 验证手机号是否已存在
         if (req.getPhone() != null && checkPhoneExists(req.getPhone())) {
-            throw new BusinessException("手机号已存在");
+            throw new BusinessException(ResultCodeEnum.PHONE_EXISTS);
         }
         // 3. 保存用户信息
         User user = new User();
         user.setUsername(req.getUsername());
         user.setPassword(passwordEncoder.encode(req.getPassword()));
         user.setPhone(req.getPhone());
-        user.setStatus(1);
+        user.setStatus(UserStatusEnum.ENABLED.getCode());
         int inserted = userMapper.insert(user);
         if (inserted <= 0) {
-            throw new BusinessException("注册失败,请稍后重试");
+            throw new BusinessException(ResultCodeEnum.INTERNAL_ERROR, "注册失败，请稍后重试");
         }
         log.info("用户注册成功：username={}, phone={}", req.getUsername(), req.getPhone());
     }
@@ -74,18 +75,22 @@ public class UserServiceImpl implements UserService {
         User user = userMapper.selectOne(wrapper);
 
         // 2.用户不存在
-        if(user == null){
-            throw new BusinessException("用户名或密码错误");
+        if (user == null) {
+            throw new BusinessException(ResultCodeEnum.PASSWORD_ERROR);
         }
 
         // 3. 密码匹配
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
-            throw new BusinessException("用户名或密码错误");
+            throw new BusinessException(ResultCodeEnum.PASSWORD_ERROR);
         }
 
         // 4. 检查用户状态（是否被禁用）
-        if (user.getStatus() == null || user.getStatus() != 1) {
-            throw new BusinessException("用户被禁用");
+        UserStatusEnum status = UserStatusEnum.fromCodeOrDefault(
+                user.getStatus(),
+                UserStatusEnum.DISABLED
+        );
+        if (status.isDisabled()) {
+            throw new BusinessException(ResultCodeEnum.USER_DISABLED);
         }
 
         // 5. 生成 token
